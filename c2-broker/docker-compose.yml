@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  broker:
+    image: eclipse-mosquitto:latest
+    container_name: c2_redirector
+    restart: unless-stopped
+    ports:
+      - "8883:8883"
+    volumes:
+      - ./config:/mosquitto/config:ro # Read-only para proteger configs y llaves
+      - ./data:/mosquitto/data
+      - ./log:/mosquitto/log
+    security_opt:
+      - no-new-privileges:true # Evita escalamiento de privilegios dentro del contenedor
+    networks:
+      - c2_network
+
+networks:
+  c2_network:
+    driver: bridge
