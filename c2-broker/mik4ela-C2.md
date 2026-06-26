@@ -52,3 +52,35 @@ mensaje_cifrado = cipher.encrypt_to_json("whoami")
 comando_bytes = cipher.decrypt_from_json(mensaje_cifrado)
 comando_str = comando_bytes.decode('utf-8')
 ```
+
+## 4. Requisitos para el Agente
+
+Para que el agente pueda conectarse, debe cumplir con:
+
+1. Certificados: Poseer ca.crt, agent.crt y agent.key. La conexión fallará si no presenta el certificado firmado por la CA.
+
+2. Persistencia: Si el agente se reinicia, debe mantener un estado de contador para evitar la reutilización de iv (nonce), utilizando la funcionalidad state_file de crypto_lib.
+
+3. Error Handling: Si el descifrado falla (InvalidTag), el agente no debe ejecutar nada y debe reportar un error de autenticación al servidor.
+
+## 5. Gestión de Políticas
+
+- NUNCA incluir psk.key ni archivos .key en el control de versiones (Git).
+
+- Utilizar variables de entorno o archivos locales no versionados para cargar las rutas de los certificados.
+
+- Si una clave es comprometida, debe rotarse inmediatamente en todos los nodos (Agentes y n8n).
+
+## 6. Estructura del Payload
+
+Cualquier mensaje que viaje por el Broker debe seguir estrictamente este formato JSON:
+
+```json
+{
+  "iv": "base64_string",
+  "ciphertext": "base64_string",
+  "tag": "base64_string"
+}
+```
+
+Si el JSON no contiene estos tres campos, el sistema lo descartará automáticamente.
