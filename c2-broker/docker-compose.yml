@@ -14,6 +14,33 @@ services:
     networks:
       - c2_network
 
+  bridge:
+    build:
+      context: .
+      dockerfile: bridge/Dockerfile
+    container_name: c2_bridge
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - MQTT_HOST=broker
+      - MQTT_PORT=8883
+      - CA_CERT=config/certs/ca.crt
+      - CLIENT_CERT=config/certs/bridge.crt
+      - CLIENT_KEY=config/certs/bridge.key
+      - PSK_FILE=crypto_lib/psk.key
+      - STATE_FILE=/app/data/bridge.state
+
+    volumes:
+      - ./config/certs:/app/config/certs:ro
+      - ./crypto_lib/psk.key:/app/crypto_lib/psk.key:ro
+      - ./data:/app/data
+    depends_on:
+      broker:
+        condition: service_started
+    networks:
+      - c2_network
+
 networks:
   c2_network:
     driver: bridge
