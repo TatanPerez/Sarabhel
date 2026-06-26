@@ -741,6 +741,7 @@ c2-broker/                         ← Directorio raíz del C2 Broker
 │
 ├── bridge/                         ← Bridge HTTP para n8n
 │   ├── bridge.py                   ←   API Flask (cifra/descifra, HTTP ↔ MQTT)
+│   ├── Dockerfile                  ←   Imagen Docker para el bridge
 │   └── requirements.txt            ←   Dependencias Python
 │
 ├── config/                         ← Configuración del broker Mosquitto
@@ -764,12 +765,15 @@ c2-broker/                         ← Directorio raíz del C2 Broker
 │
 ├── scripts/                        ← Utilidades
 │   ├── gen-certs.sh                ←   Regenerar todos los certificados
-│   └── gen-agent-cert.sh           ←   Generar cert para un agente nuevo
+│   ├── gen-agent-cert.sh           ←   Generar cert para un agente nuevo
+│   └── deploy.sh                   ←   Deploy automático a VM
 │
 ├── data/                           ← Persistencia del broker (Docker volume)
 ├── log/                            ← Logs del broker (Docker volume)
 │
-├── docker-compose.yml              ← Orquestación del contenedor Mosquitto
+├── docker-compose.yml              ← Orquestación del broker + bridge
+├── test_comms.py                   ← Prueba de comunicación MQTT desde terminal
+├── test_full.py                    ← Prueba completa (register + command + result)
 ├── README.md                       ← Este documento
 └── mik4ela-C2.md                   ← (Symlink/pointer a README.md)
 ```
