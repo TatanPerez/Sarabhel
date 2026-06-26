@@ -29,7 +29,10 @@ openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
     -out server.crt -days 365
 rm -f server.csr
 echo "   Server CN=c2-broker"
-chmod 600 server.key
+# 644 porque Mosquitto corre como uid 1883 dentro de Docker
+# y necesita leer la clave. Con 600 el usuario del host (uid 1000)
+# es el único que puede leerla, y Mosquitto no arranca.
+chmod 644 server.key
 
 echo ""
 echo "[+] Regenerando certificado del AGENTE de ejemplo..."
