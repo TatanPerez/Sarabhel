@@ -1,0 +1,20 @@
+# ── Claves privadas (NUNCA versionar) ──
+*.key
+!config/certs/ca.crt
+!config/certs/server.crt
+!config/certs/agent.crt
+
+# ── Estado de nonce ──
+*.state
+
+# ── Python ──
+__pycache__/
+*.pyc
+
+# ── Docker ──
+data/
+log/
+
+# ── OS ──
+.DS_Store
+Thumbs.db

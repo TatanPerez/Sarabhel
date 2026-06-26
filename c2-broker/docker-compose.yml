@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   broker:
     image: eclipse-mosquitto:latest
