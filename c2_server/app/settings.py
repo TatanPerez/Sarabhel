@@ -2,7 +2,8 @@
 All values are loaded from environment variables using pydantic.BaseSettings.
 """
 
-from pydantic import BaseSettings, Field
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # MQTT configuration

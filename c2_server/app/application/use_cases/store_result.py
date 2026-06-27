@@ -19,8 +19,37 @@ updates the command status to ``COMPLETED``.
 from datetime import datetime
 from typing import Dict, Any
 
-from ..infrastructure.repositories import ResultRepository, CommandRepository
-from ..domain.entities import Result
+from ...domain.entities import CommandStatus, Result
+from ...infrastructure.repositories import CommandRepository, ResultRepository
+
+
+class StoreResult:
+    def __init__(self, result_repository: ResultRepository, command_repository: CommandRepository | None = None):
+        self.result_repository = result_repository
+        self.command_repository = command_repository
+
+    async def execute(self, agent_id: str, payload: Dict[str, Any]) -> Result | None:
+        command_id = payload.get("command_id")
+        if command_id is None:
+            return None
+
+        result_data = payload.get("result", {})
+        result = self.result_repository.create(
+            command_id=command_id,
+            agent_id=payload.get("agent_id", agent_id),
+            stdout=result_data.get("stdout", ""),
+            stderr=result_data.get("stderr", ""),
+            exit_code=result_data.get("exit_code"),
+        )
+
+        if self.command_repository:
+            self.command_repository.set_status(
+                command_id=command_id,
+                new_status=CommandStatus.COMPLETED,
+                completed_at=datetime.utcnow(),
+            )
+
+        return result
 
 
 def store_result(db_session, payload: Dict[str, Any]) -> Result:
@@ -52,7 +81,7 @@ def store_result(db_session, payload: Dict[str, Any]) -> Result:
     # If we have a command_id, mark it as completed
     if command_id:
         cmd_repo = CommandRepository(db_session)
-        from ..domain.entities import CommandStatus
+        from ...domain.entities import CommandStatus
         cmd_repo.set_status(
             command_id=command_id,
             new_status=CommandStatus.COMPLETED,

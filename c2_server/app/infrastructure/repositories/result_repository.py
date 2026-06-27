@@ -6,7 +6,7 @@ from typing import Optional, List
 from sqlalchemy.orm import Session
 
 from ..models import ResultModel, CommandModel
-from ..domain.entities import Result
+from ...domain.entities import Result
 
 
 class ResultRepository:

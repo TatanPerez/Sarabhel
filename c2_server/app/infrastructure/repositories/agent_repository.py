@@ -3,7 +3,7 @@
 from datetime import datetime
 from sqlalchemy.orm import Session
 from ..models import AgentModel
-from ..domain.entities import Agent
+from ...domain.entities import Agent
 from typing import Optional, List
 
 

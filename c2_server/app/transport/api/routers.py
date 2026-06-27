@@ -1,3 +1,5 @@
+# c2_server/app/transport/api/routers.py
+
 """FastAPI routers that expose the C2 server's public interface.
 
 All endpoints are prefixed with `/api/v1` at the FastAPI application level.
@@ -7,9 +9,14 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
 
-from app.infrastructure.repositories import AgentRepository, CommandRepository, ResultRepository
-from app.infrastructure.Base import get_db, init_db
-from app.settings import settings
+# Importa los casos de uso y el contenedor DI
+from ...application.use_cases.dispatch_command import DispatchCommand
+from ...infrastructure.di import (
+    get_dispatch_command_use_case,
+)
+from ...infrastructure.repositories import AgentRepository, ResultRepository
+from ...infrastructure.Base import get_db
+from ...settings import settings
 
 router = APIRouter()
 
@@ -101,25 +108,34 @@ def get_agent(agent_id: str, db = Depends(get_db)):
 
 
 # ------------------------------------------------------------
-# Endpoint: Dispatch a command to an agent
+# Endpoint: Dispatch a command to an agent (REFCTORIZADO)
 # ------------------------------------------------------------
 @router.post("/agents/{agent_id}/command", response_model=CommandResponse, dependencies=[Depends(verify_api_key)])
-async def dispatch_command(agent_id: str, request: CommandRequest, db = Depends(get_db)):
-    from ..domain.entities import CommandType
-    # Ensure agent exists
-    agent_repo = AgentRepository(db)
-    if not agent_repo.get_by_id(agent_id):
-        raise HTTPException(status_code=404, detail="Agent not found")
-    # Use the application use‑case to create DB record and publish MQTT
-    from ..application.use_cases.dispatch_command import dispatch_command as dispatch_uc
-    cmd = await dispatch_uc(db, agent_id, request.command_type, request.args)
+async def dispatch_command_to_agent(
+    agent_id: str,
+    request: CommandRequest,
+    dispatch_use_case: DispatchCommand = Depends(get_dispatch_command_use_case)
+):
+    """
+    Dispatches a command to a specific agent using the clean architecture use case.
+    """
+    # El caso de uso ahora maneja toda la lógica: validación, creación, persistencia y publicación.
+    command_entity = await dispatch_use_case.execute(
+        agent_id=agent_id,
+        command_type_str=request.command_type,
+        args=request.args
+    )
+    
+    if not command_entity:
+        raise HTTPException(status_code=404, detail="Agent not found or command invalid.")
+
     return CommandResponse(
-        id=cmd.id,
-        agent_id=cmd.agent_id,
-        command_type=cmd.command_type.value,
-        status=cmd.status.value,
-        created_at=cmd.created_at.isoformat() if cmd.created_at else None,
-        completed_at=cmd.completed_at.isoformat() if cmd.completed_at else None,
+        id=command_entity.id,
+        agent_id=command_entity.agent_id,
+        command_type=command_entity.command_type.value,
+        status=command_entity.status.value,
+        created_at=command_entity.created_at.isoformat() if command_entity.created_at else None,
+        completed_at=command_entity.completed_at.isoformat() if command_entity.completed_at else None,
     )
 
 

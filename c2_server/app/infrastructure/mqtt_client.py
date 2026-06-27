@@ -1,21 +1,24 @@
+# c2_server/app/infrastructure/mqtt_service.py
+
 """Infrastructure layer – Asynchronous MQTT client built on ``aiomqtt``.
 
-The server uses this wrapper to publish and subscribe to the internal
-Mosquitto broker.  Only the minimal set of methods required for the MVP
-are implemented; additional helpers can be added later.
+This service is a pure infrastructure component. It ONLY handles:
+1. The MQTT connection lifecycle.
+2. Serializing/deserializing messages.
+3. Dispatching incoming messages to registered callbacks.
+
+It has NO knowledge of use cases, repositories, or the database.
 """
 
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
-from aiomqtt import Client
-from aiomqtt.error import AiomqttException
+from aiomqtt import Client, Message, MqttError
 
 from ..settings import settings
-from ..domain.enums import CommandType, EventType
+from ..domain.entities import CommandType
 
 log = logging.getLogger(__name__)
 
@@ -40,10 +43,22 @@ class MqttService:
     def __init__(self, client_id: str = "c2-server"):
         self.client_id = client_id
         self._client: Optional[Client] = None
+        self._client_context = None
         self._connected = asyncio.Event()
-        # optional external callbacks for incoming messages
-        self._command_handler: Optional[Callable[[str, Dict[str, Any]], Any]] = None
-        self._result_handler: Optional[Callable[[str, Dict[str, Any]], Any]] = None
+        # Define callbacks for specific inbound message types
+        self._on_register_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+        self._on_heartbeat_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
+        self._on_result_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
+        self._on_command_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
+
+    def on_register(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        self._on_register_callback = callback
+
+    def on_heartbeat(self, callback: Callable[[str, Dict[str, Any]], None]) -> None:
+        self._on_heartbeat_callback = callback
+
+    def on_result(self, callback: Callable[[str, Dict[str, Any]], None]) -> None:
+        self._on_result_callback = callback
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -51,113 +66,120 @@ class MqttService:
     async def connect(self) -> None:
         """Create the underlying ``aiomqtt.Client`` and connect to the broker."""
         if self._client is not None:
+            log.warning("MQTT client is already connected or connecting.")
             return
+            
         self._client = Client(
-            broker=settings.mqtt_host,
+            hostname=settings.mqtt_host,  # 'hostname' es el parámetro correcto en aiomqtt
             port=settings.mqtt_port,
             username=settings.mqtt_user,
             password=settings.mqtt_password,
-            client_id=self.client_id,
+            identifier=self.client_id,
         )
-        self._client.on_connect = self._on_connect
-        self._client.on_message = self._on_message
+        
         try:
-            await self._client.connect()
-        except AiomqttException as exc:
+            self._client_context = self._client
+            await self._client_context.__aenter__()
+            self._connected.set()
+            log.info("Connected to MQTT broker")
+
+            await self._client.subscribe(TOPIC_REGISTER)
+            await self._client.subscribe("c2/heartbeat/+")
+            await self._client.subscribe("c2/results/+")
+
+            asyncio.create_task(self._message_listener())
+                
+        except MqttError as exc:
+            self._connected.clear()
             raise RuntimeError(f"Failed to connect to MQTT broker: {exc}") from exc
-        await self._connected.wait()  # block until on_connect fires
 
     async def close(self) -> None:
+        """Disconnect from the broker and clean up resources."""
         if self._client:
-            await self._client.disconnect()
-        self._client = None
+            if self._client_context:
+                await self._client_context.__aexit__(None, None, None)
+            self._client = None
+            self._client_context = None
         self._connected.clear()
+        log.info("MQTT client connection closed.")
 
-    # ------------------------------------------------------------------
-    # Internal callbacks
-    # ------------------------------------------------------------------
-    async def _on_connect(self) -> None:
-        log.info("✅ Connected to MQTT broker")
-        self._connected.set()
-        # Subscribe to topics we need to receive from agents
-        await self._client.subscribe(TOPIC_REGISTER)
-        await self._client.subscribe(TOPIC_HEARTBEAT.format(agent_id="+"))
-        await self._client.subscribe(TOPIC_RESULT.format(agent_id="+"))
-        # Command topics are subscription‑per‑agent and will be added lazily
-
-    async def _on_message(self, message) -> None:  # type: ignore
-        topic = message.topic
+    async def _message_listener(self):
+        """Continuously listen for messages and dispatch them."""
+        if not self._client:
+            raise RuntimeError("MQTT client not connected. Cannot start listener.")
+            
         try:
-            payload = json.loads(message.payload)
-        except json.JSONDecodeError:
-            log.warning("Received non‑JSON payload on %s", topic)
+            async for message in self._client.messages:
+                await self._on_message(message)
+        except MqttError as e:
+            log.error(f"MQTT listener error: {e}")
+            await self.close() # Close connection on error
+
+    # ------------------------------------------------------------------
+    # Internal message dispatcher
+    # ------------------------------------------------------------------
+    async def _on_message(self, message: Message) -> None:
+        """Dispatches an incoming message to the appropriate callback."""
+        topic = str(message.topic)
+        try:
+            payload = json.loads(message.payload.decode())
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            log.warning("Received non-JSON payload on %s", topic)
             return
 
-        # Dispatch based on topic pattern – simple string matching is sufficient for MVP
+        # Dispatch based on topic pattern
         if topic == TOPIC_REGISTER:
-            # Persist registration via use‑case
-            from ..application.use_cases.register_agent import register_agent
-            from ..infrastructure.Base import SessionLocal
-            with SessionLocal() as db:
-                register_agent(db, payload)
+            if self._on_register_callback:
+                await self._on_register_callback(payload)
+            else:
+                log.warning("No callback registered for topic: %s", topic)
+                
         elif topic.startswith("c2/heartbeat/"):
             agent_id = topic.split("/")[-1]
-            from ..application.use_cases.update_heartbeat import update_heartbeat
-            from ..infrastructure.Base import SessionLocal
-            with SessionLocal() as db:
-                update_heartbeat(db, agent_id, payload)
+            if self._on_heartbeat_callback:
+                await self._on_heartbeat_callback(agent_id, payload)
+            else:
+                log.warning("No callback registered for topic: %s", topic)
+
         elif topic.startswith("c2/results/"):
             agent_id = topic.split("/")[-1]
-            if self._result_handler:
-                await self._result_handler(agent_id, payload)
+            if self._on_result_callback:
+                await self._on_result_callback(agent_id, payload)
             else:
-                # Default persistence via use‑case
-                from ..application.use_cases.store_result import store_result
-                from ..infrastructure.Base import SessionLocal
-                with SessionLocal() as db:
-                    store_result(db, payload)
+                log.warning("No callback registered for topic: %s", topic)
+                
+        # The server normally publishes to command topics, but we handle it just in case
         elif topic.startswith("c2/commands/"):
-            # The server normally publishes to this topic; receiving is rare but supported.
             agent_id = topic.split("/")[-1]
-            if self._command_handler:
-                await self._command_handler(agent_id, payload)
+            if self._on_command_callback:
+                await self._on_command_callback(agent_id, payload)
+            else:
+                log.warning("No callback registered for topic: %s", topic)
         else:
             log.debug("Unhandled MQTT topic %s", topic)
 
     # ------------------------------------------------------------------
-    # Public publish helpers used by the application layer
+    # Public publish helpers (sin cambios, son perfectos)
     # ------------------------------------------------------------------
     async def publish(self, topic: str, payload: Dict[str, Any], *, qos: int = 1, retain: bool = False) -> None:
-        if not self._client:
+        """Publish a generic message to an MQTT topic."""
+        if not self._client or not self._connected.is_set():
             raise RuntimeError("MQTT client not connected")
         await self._client.publish(topic, json.dumps(payload), qos=qos, retain=retain)
 
     async def publish_command(self, agent_id: str, command_type: CommandType, args: Optional[Dict[str, Any]] = None) -> None:
+        """Publish a command to a specific agent."""
         topic = TOPIC_COMMAND.format(agent_id=agent_id)
-        payload = {"type": command_type.value, "args": args or {}}
+        args = args or {}
+        payload = {"type": command_type.value, "args": args}
+        if "command_id" in args:
+            payload["command_id"] = args["command_id"]
         await self.publish(topic, payload)
 
     async def publish_heartbeat(self, agent_id: str) -> None:
+        """Publish a heartbeat message for an agent."""
         topic = TOPIC_HEARTBEAT.format(agent_id=agent_id)
-        payload = {"timestamp": datetime.now(timezone.utc).isoformat()}
-        await self.publish(topic, payload)
-
-    async def publish_log(self, source: str, level: str, message: str, extra: Optional[Dict[str, Any]] = None) -> None:
-        topic = TOPIC_LOG.format(source=source)
-        payload = {"level": level, "message": message}
-        if extra:
-            payload.update(extra)
-        await self.publish(topic, payload)
-
-    # ------------------------------------------------------------------
-    # Callback registration – used by the application layer to react to inbound data
-    # ------------------------------------------------------------------
-    def set_command_handler(self, fn: Callable[[str, Dict[str, Any]], Any]) -> None:
-        self._command_handler = fn
-
-    def set_result_handler(self, fn: Callable[[str, Dict[str, Any]], Any]) -> None:
-        self._result_handler = fn
+        await self.publish(topic, {"agent_id": agent_id})
 
 
-# Export a singleton for convenience throughout the codebase
 mqtt_service = MqttService()

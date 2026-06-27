@@ -6,7 +6,7 @@ from typing import Optional, List
 from sqlalchemy.orm import Session
 
 from ..models import CommandModel, AgentModel
-from ..domain.entities import Command, CommandStatus, CommandType
+from ...domain.entities import Command, CommandStatus, CommandType
 
 
 class CommandRepository:

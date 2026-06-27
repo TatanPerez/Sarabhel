@@ -52,6 +52,12 @@ services:
       C2_API_KEY: supersecretapikey
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks:
       - c2net
 
@@ -78,10 +84,12 @@ services:
     container_name: c2_cli
     restart: unless-stopped
     depends_on:
-      - c2_server
+      c2_server:
+        condition: service_healthy
     environment:
       C2_API_URL: http://c2_server:8000/api/v1
       C2_API_KEY: supersecretapikey
+    entrypoint: ["tail", "-f", "/dev/null"]
     networks:
       - c2net
     # No ports – invoked via `docker exec`
@@ -91,7 +99,10 @@ services:
     container_name: c2_agent
     restart: unless-stopped
     depends_on:
-      - mosquitto
+      c2_server:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
     environment:
       AGENT_ID: myagent1
       C2_STATIC_TOKEN: C2_STATIC_TOKEN

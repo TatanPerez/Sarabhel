@@ -37,9 +37,9 @@ class Agent:
 
 @dataclass(frozen=True)
 class Command:
-    id: int | None = None
     agent_id: str
     command_type: CommandType
+    id: int | None = None
     args: dict = field(default_factory=dict)
     status: CommandStatus = CommandStatus.QUEUED
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -48,9 +48,9 @@ class Command:
 
 @dataclass(frozen=True)
 class Result:
-    id: int | None = None
     command_id: int
     agent_id: str
+    id: int | None = None
     stdout: str = ""
     stderr: str = ""
     exit_code: int | None = None
