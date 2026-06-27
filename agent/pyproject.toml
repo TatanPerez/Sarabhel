@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "c2-agent"
+version = "0.1.0"
+description = "C2 Lab Agent – executes whitelisted commands and reports results via MQTT."
+authors = ["Sarabhel Team <team@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+paho-mqtt = "^2.0.0"
+psutil = "^5.9.0"
+python-dotenv = "^1.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

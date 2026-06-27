@@ -1,0 +1,112 @@
+version: "3.9"
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mqtt
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - mosquitto_data:/mosquitto/data
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    environment:
+      - MOSQUITTO_USERNAME=c2_user
+      - MOSQUITTO_PASSWORD=c2_pass
+    networks:
+      - c2net
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: c2_user
+      POSTGRES_PASSWORD: secret_password
+      POSTGRES_DB: c2db
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - c2net
+
+  c2_server:
+    build: ./c2_server
+    container_name: c2_server
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+      - postgres
+    environment:
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+      MQTT_USER: c2_user
+      MQTT_PASSWORD: c2_pass
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: c2_user
+      DB_PASSWORD: secret_password
+      DB_NAME: c2db
+      C2_STATIC_TOKEN: C2_STATIC_TOKEN
+      C2_API_KEY: supersecretapikey
+    ports:
+      - "8000:8000"
+    networks:
+      - c2net
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+      - postgres
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=adminpw
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - c2net
+
+  cli:
+    build: ./cli
+    container_name: c2_cli
+    restart: unless-stopped
+    depends_on:
+      - c2_server
+    environment:
+      C2_API_URL: http://c2_server:8000/api/v1
+      C2_API_KEY: supersecretapikey
+    networks:
+      - c2net
+    # No ports – invoked via `docker exec`
+
+  agent:
+    build: ./agent
+    container_name: c2_agent
+    restart: unless-stopped
+    depends_on:
+      - mosquitto
+    environment:
+      AGENT_ID: myagent1
+      C2_STATIC_TOKEN: C2_STATIC_TOKEN
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+      MQTT_USER: c2_user
+      MQTT_PASSWORD: c2_pass
+      HEARTBEAT_INTERVAL: 30
+    networks:
+      - c2net
+    # No ports – runs continuously inside container
+
+networks:
+  c2net:
+    driver: bridge
+
+volumes:
+  mosquitto_data:
+  pg_data:
+  n8n_data:
