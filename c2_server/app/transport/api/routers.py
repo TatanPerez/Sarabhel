@@ -7,9 +7,9 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
 
-from ..infrastructure.repositories import AgentRepository, CommandRepository, ResultRepository
-from ..infrastructure.Base import get_db, init_db
-from ..settings import settings
+from app.infrastructure.repositories import AgentRepository, CommandRepository, ResultRepository
+from app.infrastructure.Base import get_db, init_db
+from app.settings import settings
 
 router = APIRouter()
 

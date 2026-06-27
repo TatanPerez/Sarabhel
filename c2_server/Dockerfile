@@ -1,18 +1,30 @@
 FROM python:3.11-slim
 
-# create non‑root user
+RUN apt-get update && apt-get install -y \
+    curl \
+    build-essential \
+    gcc \
+    libssl-dev \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd -r app && useradd -r -g app app
+
 WORKDIR /app
 
-# Install Poetry and project deps
-COPY pyproject.toml .
-RUN pip install --no-cache-dir poetry && \
-    poetry config virtualenvs.create false && \
-    poetry install --no-root
+# install poetry cleanly
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir poetry
 
-COPY app ./app
+COPY pyproject.toml ./
 
-# Drop privileges
+RUN poetry config virtualenvs.create false && \
+    poetry install --no-root --no-interaction --no-ansi
+
+COPY ./app /app
+
 USER app
+
 EXPOSE 8000
+ENV PYTHONPATH=/app
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

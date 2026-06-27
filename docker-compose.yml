@@ -36,7 +36,9 @@ services:
     depends_on:
       - mosquitto
       - postgres
+    working_dir: /app
     environment:
+      PYTHONPATH: /app
       MQTT_HOST: mosquitto
       MQTT_PORT: 1883
       MQTT_USER: c2_user
