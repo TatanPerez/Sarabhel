@@ -26,6 +26,8 @@ API_URL = os.getenv("C2_API_URL", "http://localhost:8000/api/v1")
 API_KEY = os.getenv("C2_API_KEY", "supersecretapikey")
 MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_USER = os.getenv("MQTT_USER")
+MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 
 HEADERS = {"X-API-Key": API_KEY}
 
@@ -120,6 +122,8 @@ def watch(agent_id: str, since: Optional[str]):
 def events(source: str):
     """Monitor events in real time via MQTT."""
     client = mqtt.Client(client_id="c2-cli")
+    if MQTT_USER and MQTT_PASSWORD:
+        client.username_pw_set(MQTT_USER, MQTT_PASSWORD)
     client.on_connect = lambda c, u, f, rc: c.subscribe("c2/logs/#")
     client.on_message = lambda c, u, m: print(f"[{m.timestamp}] {m.topic}: {m.payload.decode()}")
 

@@ -89,6 +89,10 @@ services:
     environment:
       C2_API_URL: http://c2_server:8000/api/v1
       C2_API_KEY: supersecretapikey
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+      MQTT_USER: c2_user
+      MQTT_PASSWORD: c2_pass
     entrypoint: ["tail", "-f", "/dev/null"]
     networks:
       - c2net
